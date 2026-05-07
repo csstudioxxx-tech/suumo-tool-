@@ -46,26 +46,38 @@ def extract_total_count(html: str) -> int:
     取れなかったら 0 を返す (UI 側で「件数未取得」表示)。
 
     抽出フロー:
-    1. 既知のキーワード付きパターン (該当～件 / 全～件 等) を順に試す
-    2. それも駄目なら HTML 中の「N件」を全部拾って 100 以上の最大値を採用
+    1. HTML タグを除去・空白正規化・全角数字→半角 でテキスト化
+    2. 既知のキーワード付きパターン (該当～件 / 全～件 等) を順に試す
+    3. それも駄目なら HTML 中の「N件」を全部拾って 100 以上の最大値を採用
        (SUUMO では総件数が最も大きい数値になる前提)
     """
     if not html:
         return 0
 
-    # 1) キーワード付きパターン
+    # 1) HTML タグ除去 + 空白正規化 + 全角数字→半角
+    #    "<span>11</span>件ありました" → "11 件ありました"
+    text = re.sub(r"<[^>]+>", " ", html)
+    text = re.sub(r"&nbsp;|&#160;", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    # 全角数字 → 半角数字
+    text = text.translate(str.maketrans(
+        "０１２３４５６７８９",
+        "0123456789",
+    ))
+
+    # 2) キーワード付きパターン
     for pat in _TOTAL_COUNT_PATTERNS:
-        m = pat.search(html)
+        m = pat.search(text)
         if m:
             try:
                 return int(m.group(1).replace(",", ""))
             except ValueError:
                 continue
 
-    # 2) フォールバック: HTML 中の「N件」を全部拾って 100 以上の最大値
+    # 3) フォールバック: 「N件」を全部拾って 100 以上の最大値
     #    (件数表示以外の小さい数値 - 例: ページ番号 - を除外するため 100 以上を採用)
     candidates: list[int] = []
-    for m in re.finditer(r"([0-9,]+)\s*件", html):
+    for m in re.finditer(r"([0-9,]+)\s*件", text):
         try:
             n = int(m.group(1).replace(",", ""))
             if n >= 100:
