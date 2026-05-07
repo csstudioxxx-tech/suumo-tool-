@@ -1,0 +1,28 @@
+# 秘密情報 (絶対に Git にあげない)
+credentials/
+service_account.json
+user_config.json
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.venv/
+venv/
+
+# ログ・出力
+logs/
+*.log
+test_result.json
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+
+# テスト用ローカル設定
+_test_*.py

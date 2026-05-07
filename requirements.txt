@@ -1,0 +1,9 @@
+# Streamlit Cloud がこのファイルを自動で読んで pip install します。
+# ファイル名は必ず "requirements.txt" にしてください (リネーム不可)。
+
+streamlit>=1.30,<2.0
+requests>=2.31
+beautifulsoup4>=4.12
+lxml>=4.9
+gspread>=5.12
+google-auth>=2.23
