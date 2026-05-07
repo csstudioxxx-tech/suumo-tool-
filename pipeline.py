@@ -20,8 +20,20 @@ import threading
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from address_predictor import AddressPredictor, build_gmap_url, is_rc_structure
+
+
+# SUUMO library 系の次ページ URL を `?pn=N` 形式で組み立てるユーティリティ
+def _build_next_page_url(start_url: str, next_page_no: int) -> str:
+    """`?pn=N` を付け足した URL を返す。
+    既に pn パラメータがあれば置換、なければ追加。"""
+    parsed = urlparse(start_url)
+    qs = parse_qs(parsed.query)
+    qs["pn"] = [str(next_page_no)]
+    new_query = urlencode(qs, doseq=True)
+    return urlunparse(parsed._replace(query=new_query))
 
 
 # SUUMO 一覧ページから総件数を抽出するための正規表現候補
@@ -247,8 +259,25 @@ class Pipeline:
                     self._check_stop()
                     self._process_detail(d_url)
 
-                # 次ページ
+                # 次ページ: parser.py の抽出ロジックを優先
                 next_url = extract_next_page_url(current_html, current_url)
+
+                # フォールバック: parser.py が次ページ拾えない場合、
+                # SUUMO library 系の `?pn=N` 形式で URL を組み立てて試す。
+                # 全件数(total_count)を超える前ならこの方法でだいたい辿れる。
+                if (not next_url) or (next_url in self._visited_list_urls):
+                    if (
+                        self.stats.total_count > 0
+                        and len(self._visited_detail_urls) < self.stats.total_count
+                    ):
+                        guessed = _build_next_page_url(start_url, page_no + 1)
+                        if guessed not in self._visited_list_urls:
+                            self._log(
+                                f"[P{page_no}] 次ページリンク見つからず → "
+                                f"?pn={page_no + 1} で推測アクセス"
+                            )
+                            next_url = guessed
+
                 if not next_url or next_url in self._visited_list_urls:
                     self._log("次ページなし。巡回終了。")
                     break
@@ -261,6 +290,15 @@ class Pipeline:
                     self._log(f"次ページ取得失敗: {next_url}")
                     self.stats.errors += 1
                     break
+
+                # 推測ページに 詳細URL が 1件も無ければそこで終了 (実在しないページ)
+                if not extract_detail_urls(next_html, next_url):
+                    self._log(
+                        f"[P{page_no + 1}] 推測URL に詳細物件が無いため終了 "
+                        f"({next_url})"
+                    )
+                    break
+
                 current_url = next_url
                 current_html = next_html
 
