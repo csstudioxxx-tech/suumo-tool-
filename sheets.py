@@ -30,29 +30,36 @@ GOOGLE_SCOPES = [
 
 # ---------------------------------------------------------------------
 # スタイル定義 (新規シート生成時に適用)
+# プロフェッショナル感重視: ダーク基調ヘッダー + 縞模様 + 細い罫線
 # ---------------------------------------------------------------------
-# ヘッダー行の背景色 (柔らかい青系)
-HEADER_BG_COLOR = {"red": 0.20, "green": 0.40, "blue": 0.65}
-# ヘッダー行の文字色 (白)
+# ヘッダー行: ダーク・スレート (#2D3748) + 白文字
+HEADER_BG_COLOR = {"red": 0.176, "green": 0.216, "blue": 0.282}
 HEADER_TEXT_COLOR = {"red": 1.0, "green": 1.0, "blue": 1.0}
+# 縞模様 (バンディング) のオフホワイト (#F7FAFC)
+BAND_ROW_COLOR = {"red": 0.969, "green": 0.980, "blue": 0.988}
+# 罫線色 (薄いグレー #E2E8F0)
+BORDER_COLOR = {"red": 0.886, "green": 0.910, "blue": 0.941}
 
 # 列ごとの推奨幅 (px)。SHEET_COLUMNS のラベル名でルックアップ。
-# 知らないラベルにはデフォルト 150px が当たる。
+# config.py 側で別ラベルでも fallback で動くよう、エイリアスも持つ。
 _COLUMN_WIDTHS_BY_NAME: dict[str, int] = {
-    "物件名": 220,
-    "SUUMO住所": 230,
-    "築年月": 100,
-    "構造": 90,
-    "予測住所": 260,
-    "郵便番号": 100,
-    "GMap URL": 220,
+    # 標準ラベル
+    "物件名": 240, "物件名称": 240,
+    "SUUMO住所": 250, "住所": 250,
+    "築年月": 110,
+    "構造": 100,
+    "予測住所": 280, "住所予測": 280,
+    "郵便番号": 110, "予測住所の郵便番号": 130,
+    "GMap URL": 220, "予測住所のGoogle Map URL": 220,
     "要手動確認": 110,
     "備考": 320,
 }
-_DEFAULT_COL_WIDTH = 150
+_DEFAULT_COL_WIDTH = 160
 
 # データ検証で「チェックボックス化」したい列のラベル
 _CHECKBOX_COLUMN_NAMES = ("要手動確認",)
+# 太字にしたい列ラベル (1列目強調)
+_BOLD_FIRST_COLUMN_NAMES = ("物件名", "物件名称")
 
 
 class SheetsError(Exception):
@@ -101,6 +108,10 @@ class SheetsClient:
         self._gc = gspread.authorize(creds)
         self._spreadsheet = self._gc.open_by_key(spreadsheet_id)
         self._worksheet: Optional[gspread.Worksheet] = None
+        # 次に書き込む行 (1=ヘッダー、2=最初のデータ)
+        # データ検証範囲が広く取られると append_row が末尾に飛ぶので、
+        # 行位置を明示管理して update() で書く方式にする
+        self._next_row: int = 2
 
     # ------------------------------------------------------------------
     # シート生成
@@ -132,6 +143,7 @@ class SheetsClient:
         )
         ws.append_row(SHEET_COLUMNS, value_input_option="USER_ENTERED")
         self._worksheet = ws
+        self._next_row = 2  # ヘッダー行の次から書き始める
 
         # 固有スタイルを適用 (失敗してもデータ書込は継続)
         try:
@@ -143,14 +155,22 @@ class SheetsClient:
         return sheet_name
 
     # ------------------------------------------------------------------
-    # スタイル適用 (ヘッダー強調 + 1行目固定 + 列幅 + チェックボックス)
+    # スタイル適用 (プロフェッショナルな見た目 + チェックボックス)
     # ------------------------------------------------------------------
     def _apply_sheet_style(self, ws: gspread.Worksheet) -> None:
         """新規シートに固有スタイルを batch_update で一括適用。
-        - ヘッダー行: 背景色 + 太字 + 中央揃え + 白文字
-        - 1行目を固定 (常時表示)
-        - 列幅をラベルごとに調整
-        - 「要手動確認」列をチェックボックス化 (データ検証 BOOLEAN)
+
+        プロフェッショナル設計:
+        - ヘッダー: ダークスレート背景 + 白太字 + 中央揃え + 高さ36px
+        - 1行目を固定
+        - 縞模様 (banding) で行を見やすく
+        - 細い罫線 (薄いグレー)
+        - 物件名列 (1列目) は太字で強調
+        - 「要手動確認」列はチェックボックス化
+        - 列幅をラベルごとに最適化
+
+        データ検証は **必要分の行だけ** に絞って append が末尾に飛ぶのを防ぐ
+        (具体的な書込は SheetsClient.append_rows が update() で位置指定する)
         """
         sheet_id = ws.id
         n_cols = len(SHEET_COLUMNS)
@@ -158,15 +178,13 @@ class SheetsClient:
 
         requests: list[dict] = []
 
-        # 1) ヘッダー行のフォーマット
+        # 1) ヘッダー行のフォーマット (ダークスレート + 白太字 + 中央)
         requests.append({
             "repeatCell": {
                 "range": {
                     "sheetId": sheet_id,
-                    "startRowIndex": 0,
-                    "endRowIndex": 1,
-                    "startColumnIndex": 0,
-                    "endColumnIndex": n_cols,
+                    "startRowIndex": 0, "endRowIndex": 1,
+                    "startColumnIndex": 0, "endColumnIndex": n_cols,
                 },
                 "cell": {
                     "userEnteredFormat": {
@@ -187,7 +205,20 @@ class SheetsClient:
             }
         })
 
-        # 2) 1行目を固定 (フリーズ)
+        # 1.5) ヘッダー行の高さを 36px に
+        requests.append({
+            "updateDimensionProperties": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "dimension": "ROWS",
+                    "startIndex": 0, "endIndex": 1,
+                },
+                "properties": {"pixelSize": 36},
+                "fields": "pixelSize",
+            }
+        })
+
+        # 2) 1行目を固定
         requests.append({
             "updateSheetProperties": {
                 "properties": {
@@ -206,15 +237,89 @@ class SheetsClient:
                     "range": {
                         "sheetId": sheet_id,
                         "dimension": "COLUMNS",
-                        "startIndex": idx,
-                        "endIndex": idx + 1,
+                        "startIndex": idx, "endIndex": idx + 1,
                     },
                     "properties": {"pixelSize": width},
                     "fields": "pixelSize",
                 }
             })
 
-        # 4) 「要手動確認」列をチェックボックス化
+        # 4) データ行のデフォルト書式: 中央寄せ・標準フォント
+        requests.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 1, "endRowIndex": max_rows,
+                    "startColumnIndex": 0, "endColumnIndex": n_cols,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "verticalAlignment": "MIDDLE",
+                        "textFormat": {"fontSize": 10},
+                    }
+                },
+                "fields": "userEnteredFormat(verticalAlignment,textFormat)",
+            }
+        })
+
+        # 5) 物件名 列 (1列目) を太字で強調
+        bold_col_idx = None
+        for label in _BOLD_FIRST_COLUMN_NAMES:
+            if label in SHEET_COLUMNS:
+                bold_col_idx = SHEET_COLUMNS.index(label)
+                break
+        if bold_col_idx is not None:
+            requests.append({
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": 1, "endRowIndex": max_rows,
+                        "startColumnIndex": bold_col_idx,
+                        "endColumnIndex": bold_col_idx + 1,
+                    },
+                    "cell": {"userEnteredFormat": {"textFormat": {"bold": True}}},
+                    "fields": "userEnteredFormat.textFormat.bold",
+                }
+            })
+
+        # 6) 縞模様 (バンディング) — 1行ごとにオフホワイト
+        requests.append({
+            "addBanding": {
+                "bandedRange": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": 0, "endRowIndex": max_rows,
+                        "startColumnIndex": 0, "endColumnIndex": n_cols,
+                    },
+                    "rowProperties": {
+                        "headerColor": HEADER_BG_COLOR,
+                        "firstBandColor": {"red": 1, "green": 1, "blue": 1},
+                        "secondBandColor": BAND_ROW_COLOR,
+                    }
+                }
+            }
+        })
+
+        # 7) 罫線 (細い・薄いグレー)
+        requests.append({
+            "updateBorders": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 0, "endRowIndex": max_rows,
+                    "startColumnIndex": 0, "endColumnIndex": n_cols,
+                },
+                "innerHorizontal": {
+                    "style": "SOLID", "width": 1, "color": BORDER_COLOR,
+                },
+                "innerVertical": {
+                    "style": "SOLID", "width": 1, "color": BORDER_COLOR,
+                },
+            }
+        })
+
+        # 8) 「要手動確認」列をチェックボックス化
+        # ※ データ検証範囲を max_rows まで適用すると append_row が末尾に飛ぶため、
+        #   書込時に SheetsClient.append_rows が update() で位置指定するロジックに依存。
         for label in _CHECKBOX_COLUMN_NAMES:
             if label not in SHEET_COLUMNS:
                 continue
@@ -223,57 +328,38 @@ class SheetsClient:
                 "setDataValidation": {
                     "range": {
                         "sheetId": sheet_id,
-                        "startRowIndex": 1,        # ヘッダーは除外
-                        "endRowIndex": max_rows,
+                        "startRowIndex": 1, "endRowIndex": max_rows,
                         "startColumnIndex": col_idx,
                         "endColumnIndex": col_idx + 1,
                     },
                     "rule": {
                         "condition": {"type": "BOOLEAN"},
                         "strict": True,
-                        "showCustomUi": True,  # ← Google Sheets UIでチェックボックス表示
+                        "showCustomUi": True,
                     },
                 }
             })
-            # チェックボックス列は中央揃え
             requests.append({
                 "repeatCell": {
                     "range": {
                         "sheetId": sheet_id,
-                        "startRowIndex": 1,
-                        "endRowIndex": max_rows,
+                        "startRowIndex": 1, "endRowIndex": max_rows,
                         "startColumnIndex": col_idx,
                         "endColumnIndex": col_idx + 1,
                     },
-                    "cell": {
-                        "userEnteredFormat": {"horizontalAlignment": "CENTER"}
-                    },
+                    "cell": {"userEnteredFormat": {"horizontalAlignment": "CENTER"}},
                     "fields": "userEnteredFormat.horizontalAlignment",
                 }
             })
-
-        # 5) 行全体を上揃えにして見やすく
-        requests.append({
-            "repeatCell": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": 1,
-                    "endRowIndex": max_rows,
-                    "startColumnIndex": 0,
-                    "endColumnIndex": n_cols,
-                },
-                "cell": {
-                    "userEnteredFormat": {"verticalAlignment": "TOP"}
-                },
-                "fields": "userEnteredFormat.verticalAlignment",
-            }
-        })
 
         if requests:
             self._spreadsheet.batch_update({"requests": requests})
 
     # ------------------------------------------------------------------
-    # 行追加
+    # 行追加 (行位置を明示して書く)
+    # データ検証 (チェックボックス) を 1000行分まとめて適用してると、
+    # gspread の append_row が「使用済み範囲」を超えて末尾に書き込んでしまう。
+    # それを防ぐため、_next_row で書込位置を管理して update() で書く。
     # ------------------------------------------------------------------
     def append_rows(self, rows: Iterable[list[str]]) -> None:
         if self._worksheet is None:
@@ -283,7 +369,33 @@ class SheetsClient:
         rows = list(rows)
         if not rows:
             return
-        self._worksheet.append_rows(rows, value_input_option="USER_ENTERED")
+
+        n_cols = len(SHEET_COLUMNS)
+        start_row = self._next_row
+        end_row = start_row + len(rows) - 1
+
+        # 列範囲: A〜N_COLS
+        # 26列を超える想定はないが念のため A1 表記を組み立てる
+        def _col_letter(idx: int) -> str:
+            # 0 -> 'A', 25 -> 'Z', 26 -> 'AA' ...
+            letters = ""
+            n = idx
+            while True:
+                letters = chr(ord("A") + (n % 26)) + letters
+                n = n // 26 - 1
+                if n < 0:
+                    break
+            return letters
+
+        last_col = _col_letter(n_cols - 1)
+        a1_range = f"A{start_row}:{last_col}{end_row}"
+
+        self._worksheet.update(
+            range_name=a1_range,
+            values=rows,
+            value_input_option="USER_ENTERED",
+        )
+        self._next_row = end_row + 1
 
     def append_row(self, row: list[str]) -> None:
         self.append_rows([row])
