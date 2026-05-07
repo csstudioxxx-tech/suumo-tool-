@@ -25,15 +25,21 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from address_predictor import AddressPredictor, build_gmap_url, is_rc_structure
 
 
-# SUUMO library 系の次ページ URL を `?pn=N` 形式で組み立てるユーティリティ
+# SUUMO library 系の次ページ URL を `/p_N/` 形式で組み立てるユーティリティ
+# 例:
+#   page 1: https://suumo.jp/library/tf_04/sc_04101/
+#   page 2: https://suumo.jp/library/tf_04/sc_04101/p_2/
+#   page 3: https://suumo.jp/library/tf_04/sc_04101/p_3/
 def _build_next_page_url(start_url: str, next_page_no: int) -> str:
-    """`?pn=N` を付け足した URL を返す。
-    既に pn パラメータがあれば置換、なければ追加。"""
+    """SUUMO library のパス形式で N ページ目の URL を組み立てる。
+    既存の `/p_N/` 部分は剥がしてから新しいページ番号を付ける。"""
     parsed = urlparse(start_url)
-    qs = parse_qs(parsed.query)
-    qs["pn"] = [str(next_page_no)]
-    new_query = urlencode(qs, doseq=True)
-    return urlunparse(parsed._replace(query=new_query))
+    path = parsed.path.rstrip("/")
+    # 末尾の "/p_数字" を一旦削除
+    path = re.sub(r"/p_\d+$", "", path)
+    new_path = f"{path}/p_{next_page_no}/"
+    # クエリ文字列はクリア (library 系はパスベース)
+    return urlunparse(parsed._replace(path=new_path, query=""))
 
 
 # SUUMO 一覧ページから総件数を抽出するための正規表現候補
@@ -263,7 +269,7 @@ class Pipeline:
                 next_url = extract_next_page_url(current_html, current_url)
 
                 # フォールバック: parser.py が次ページ拾えない場合、
-                # SUUMO library 系の `?pn=N` 形式で URL を組み立てて試す。
+                # SUUMO library 系の `/p_N/` パス形式で URL を組み立てて試す。
                 # 全件数(total_count)を超える前ならこの方法でだいたい辿れる。
                 if (not next_url) or (next_url in self._visited_list_urls):
                     if (
@@ -274,7 +280,7 @@ class Pipeline:
                         if guessed not in self._visited_list_urls:
                             self._log(
                                 f"[P{page_no}] 次ページリンク見つからず → "
-                                f"?pn={page_no + 1} で推測アクセス"
+                                f"/p_{page_no + 1}/ で推測アクセス"
                             )
                             next_url = guessed
 

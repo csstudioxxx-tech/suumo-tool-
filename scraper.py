@@ -37,8 +37,8 @@ class Scraper:
     # デフォルトのアクセス間隔範囲 (ランダム化)
     DEFAULT_INTERVAL_MIN_SEC = 6.0
     DEFAULT_INTERVAL_MAX_SEC = 11.0
-    # デフォルトの長休憩設定: 100リクエストごとに 43秒
-    DEFAULT_LONG_BREAK_EVERY = 100
+    # デフォルトの長休憩設定: 300リクエストごとに 43秒
+    DEFAULT_LONG_BREAK_EVERY = 300
     DEFAULT_LONG_BREAK_SEC = 43.0
 
     def __init__(
