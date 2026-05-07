@@ -189,7 +189,9 @@ if _thread is not None:
 # ====================================================================
 cfg = user_config.load_config() if not IS_CLOUD else {}
 saved_url = cfg.get("list_url", "")
-saved_sheet_id = cfg.get("spreadsheet_id", "")
+# スプレッドシート ID: Cloud は secrets 優先、ローカルは config から
+SECRET_SHEET_ID = _get_secret("spreadsheet_id", "")
+saved_sheet_id = SECRET_SHEET_ID or cfg.get("spreadsheet_id", "")
 saved_predict = bool(cfg.get("predict_enabled", True))
 saved_rc_filter = bool(cfg.get("rc_filter_enabled", True))
 # API キー: Cloud は secrets を強制使用、ローカルは config or env から
@@ -219,10 +221,16 @@ url = st.text_input(
     "一覧 URL", value=saved_url, disabled=is_running, key="input_url",
     placeholder="https://suumo.jp/library/tf_14/sc_14102/",
 )
-sheet_id = st.text_input(
-    "スプレッドシート ID",
-    value=saved_sheet_id, disabled=is_running, key="input_sheet_id",
-)
+
+# スプレッドシート ID: secrets で固定設定されてる場合は欄を隠す
+if SECRET_SHEET_ID:
+    sheet_id = SECRET_SHEET_ID
+    st.caption(f"📊 スプレッドシート ID: 管理者により設定済み (...{sheet_id[-8:]})")
+else:
+    sheet_id = st.text_input(
+        "スプレッドシート ID",
+        value=saved_sheet_id, disabled=is_running, key="input_sheet_id",
+    )
 if IS_CLOUD:
     # Cloud では管理者が secrets で固定。UIには出さない
     gmap_key = SECRET_GMAP_KEY
