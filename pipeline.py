@@ -292,9 +292,19 @@ class Pipeline:
                     break
 
                 # 推測ページに 詳細URL が 1件も無ければそこで終了 (実在しないページ)
-                if not extract_detail_urls(next_html, next_url):
+                next_detail_urls = extract_detail_urls(next_html, next_url)
+                if not next_detail_urls:
                     self._log(
                         f"[P{page_no + 1}] 推測URL に詳細物件が無いため終了 "
+                        f"({next_url})"
+                    )
+                    break
+
+                # 次ページの全 URL が既訪問 = SUUMO が最終ページ以降に
+                # 同じコンテンツを返してる → 無限ループ防止のため終了
+                if all(u in self._visited_detail_urls for u in next_detail_urls):
+                    self._log(
+                        f"[P{page_no + 1}] 推測URL の全件が既訪問のため終了 "
                         f"({next_url})"
                     )
                     break
