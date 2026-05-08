@@ -32,14 +32,18 @@ from address_predictor import AddressPredictor, build_gmap_url, is_rc_structure
 #   page 3: https://suumo.jp/library/tf_04/sc_04101/p_3/
 def _build_next_page_url(start_url: str, next_page_no: int) -> str:
     """SUUMO library のパス形式で N ページ目の URL を組み立てる。
-    既存の `/p_N/` 部分は剥がしてから新しいページ番号を付ける。"""
+    既存の `/p_N/` 部分は剥がしてから新しいページ番号を付ける。
+
+    クエリ文字列は **保持する** (例: `?sc[]=22101&sc[]=22102` のような
+    複数市区指定の集約 URL でクエリが消えると 404 になる)。
+    """
     parsed = urlparse(start_url)
     path = parsed.path.rstrip("/")
     # 末尾の "/p_数字" を一旦削除
     path = re.sub(r"/p_\d+$", "", path)
     new_path = f"{path}/p_{next_page_no}/"
-    # クエリ文字列はクリア (library 系はパスベース)
-    return urlunparse(parsed._replace(path=new_path, query=""))
+    # クエリは元のまま保持 (集約URL対応)
+    return urlunparse(parsed._replace(path=new_path))
 
 
 # SUUMO 一覧ページから総件数を抽出するための正規表現候補
