@@ -3,6 +3,8 @@ credentials/
 service_account.json
 user_config.json
 .streamlit/secrets.toml
+_secrets_for_streamlit.toml
+secrets_template.toml
 
 # Python
 __pycache__/
