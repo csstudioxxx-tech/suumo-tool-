@@ -48,6 +48,7 @@ _COLUMN_WIDTHS_BY_NAME: dict[str, int] = {
     "SUUMO住所": 250, "住所": 250,
     "築年月": 110,
     "構造": 100,
+    "総戸数": 90,
     "予測住所": 280, "住所予測": 280,
     "郵便番号": 110, "予測住所の郵便番号": 130,
     "GMap URL": 220, "予測住所のGoogle Map URL": 220,
@@ -124,9 +125,15 @@ class SheetsClient:
         pref: str,
         city: str,
         fallback_id: str = "",
+        expected_data_rows: Optional[int] = None,
     ) -> str:
         """都道府県/市区町村 からシート名を生成して新規シートを作る。
         生成後、固有スタイル (ヘッダー強調・列幅・チェックボックス) も適用する。
+
+        expected_data_rows: 予想書込件数 (例: SUUMO一覧の全体件数)。
+            指定があれば +200 のバッファで初期行数を決定。
+            指定なしは 5000 行 (普段はこれで十分)。
+            3万件など大きいジョブも 30,200 行で確保できる。
         """
         existing = self.list_worksheet_titles()
         sheet_name = build_sheet_name(
@@ -135,10 +142,15 @@ class SheetsClient:
             fallback_id=fallback_id,
             existing_names=existing,
         )
+        # 行数決定: 想定件数があれば +200 バッファ、なければ 5000 行
+        if expected_data_rows and expected_data_rows > 0:
+            rows_count = max(1000, expected_data_rows + 200)
+        else:
+            rows_count = 5000
         # 列数は SHEET_COLUMNS に合わせる(余裕を持って +2)
         ws = self._spreadsheet.add_worksheet(
             title=sheet_name,
-            rows=1000,
+            rows=rows_count,
             cols=max(10, len(SHEET_COLUMNS) + 2),
         )
         ws.append_row(SHEET_COLUMNS, value_input_option="USER_ENTERED")
@@ -373,6 +385,19 @@ class SheetsClient:
         n_cols = len(SHEET_COLUMNS)
         start_row = self._next_row
         end_row = start_row + len(rows) - 1
+
+        # 行数が足りなければシートを動的に拡張 (3万件など大規模ジョブ対応)
+        current_max = self._worksheet.row_count or 1000
+        if end_row > current_max:
+            rows_to_add = max(5000, end_row - current_max + 1000)
+            try:
+                self._worksheet.add_rows(rows_to_add)
+                self._logger.info(
+                    "シート行数を %d → %d 行に拡張",
+                    current_max, current_max + rows_to_add,
+                )
+            except Exception as exc:
+                self._logger.warning("行数拡張失敗: %s", exc)
 
         # 列範囲: A〜N_COLS
         # 26列を超える想定はないが念のため A1 表記を組み立てる

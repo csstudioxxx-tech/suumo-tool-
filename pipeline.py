@@ -231,9 +231,14 @@ class Pipeline:
             self._logger.warning("総件数抽出失敗: %s", exc)
 
         # シート生成(最初のページから地域取得)
+        # 想定件数 (total_count) があれば、その +200 行で初期サイズを確保
         try:
             pref, city, fallback_id = extract_region(first_html, start_url)
-            sheet_name = self._sheets.create_sheet_for_region(pref, city, fallback_id)
+            expected_rows = self.stats.total_count if self.stats.total_count > 0 else None
+            sheet_name = self._sheets.create_sheet_for_region(
+                pref, city, fallback_id,
+                expected_data_rows=expected_rows,
+            )
             self.stats.sheet_name = sheet_name
             self._log(f"シート生成: {sheet_name}")
         except Exception as exc:
@@ -411,25 +416,31 @@ class Pipeline:
         manual_mark = "TRUE" if pred.needs_manual_check else "FALSE"
         note = pred.note or ""
 
-        # 住所予測 OFF でも SUUMO 住所から Google Map URL は生成しない(仕様:予測住所が空なら空)
-        # ただし predict_only_incomplete=True かつ完全な住所はすでに predicted_address に入っている
+        # 列名 → 値 の辞書 (config.py 側の SHEET_COLUMNS の順序がどうなっていてもOK)
+        # 同義ラベルもすべて拾えるよう alias 含めて定義
+        column_values: dict[str, str] = {
+            # 物件基本情報
+            "物件名": detail.name,
+            "物件名称": detail.name,                    # alias
+            "SUUMO住所": detail.address,
+            "住所": detail.address,                      # alias
+            "築年月": detail.built_at,
+            "構造": detail.structure,
+            "総戸数": detail.total_units,                # ★新規追加
+            # 予測情報
+            "予測住所": predicted_address,
+            "住所予測": predicted_address,              # alias
+            "郵便番号": postal,
+            "予測住所の郵便番号": postal,                # alias
+            "GMap URL": gmap,
+            "予測住所のGoogle Map URL": gmap,           # alias
+            # フラグ・備考
+            "要手動確認": manual_mark,
+            "備考": note,
+        }
 
-        row = [
-            detail.name,
-            detail.address,
-            detail.built_at,
-            detail.structure,
-            predicted_address,
-            postal,
-            gmap,
-            manual_mark,
-            note,
-        ]
-        # 列数を SHEET_COLUMNS に合わせる
-        assert len(row) == len(SHEET_COLUMNS), (
-            f"row 列数 ({len(row)}) と SHEET_COLUMNS ({len(SHEET_COLUMNS)}) が不一致。"
-            f"config.py の SHEET_COLUMNS に '要手動確認' と '備考' を追加してください。"
-        )
+        # SHEET_COLUMNS の順序に合わせて行を組み立てる (未定義ラベルは空文字)
+        row = [column_values.get(col_label, "") for col_label in SHEET_COLUMNS]
 
         try:
             self._sheets.append_row(row)
