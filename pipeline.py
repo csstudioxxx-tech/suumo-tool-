@@ -194,40 +194,14 @@ class Pipeline:
     # ------------------------------------------------------------------
     # 公開: 実行
     # ------------------------------------------------------------------
-    def run(self, start_url: str, resume: bool = False) -> RunStats:
-        """スクレイピング実行。
-
-        Args:
-            start_url: SUUMO 一覧ページの URL
-            resume:
-                False (デフォルト): 新規実行。stats / visited URL すべてリセット。
-                True: 前回停止地点から再開。stats / visited_detail_urls / dedup_keys
-                      を保持し、list_urls だけリセットして巡回し直す。
-                      巡回中に既処理の物件 URL に当たれば自動でスキップされる。
-        """
-        if not resume:
-            # 新規実行 - すべてリセット
-            self.stats = RunStats()
-            self.stats.started_at = time.time()
-            self._visited_list_urls = set()
-            self._visited_detail_urls = set()
-            self._dedup_keys = set()
-        else:
-            # 再開モード - 既訪問物件は保持、list URL は再巡回するためリセット
-            self._visited_list_urls = set()
-            self.stats.finished_at = 0.0  # 終了フラグ解除
-            # started_at は維持しない (再開後の経過時間を見たい場合は別フィールド)
-            self._log(
-                f"再開: 既処理 {len(self._visited_detail_urls)} 件を"
-                f"スキップして続行"
-            )
-
+    def run(self, start_url: str) -> RunStats:
+        self.stats = RunStats()
+        self.stats.started_at = time.time()
         self.stats.target_url = start_url
         self._stop_event.clear()
         self._scraper.reset_stop()
 
-        if not resume:
-            self._log(f"開始: {start_url}")
+        self._log(f"開始: {start_url}")
         self._status("最初のページを取得中…")
 
         try:
@@ -452,7 +426,7 @@ class Pipeline:
             "住所": detail.address,                      # alias
             "築年月": detail.built_at,
             "構造": detail.structure,
-            "総戸数": detail.total_units,                # ★新規追加
+            "総戸数": detail.total_units,
             # 予測情報
             "予測住所": predicted_address,
             "住所予測": predicted_address,              # alias
