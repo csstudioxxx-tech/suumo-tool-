@@ -277,6 +277,7 @@ class AddressPredictor:
             else:
                 out.predicted_address = "検索結果 なし"
                 out.needs_manual_check = True
+                out.note = "住所予測不可"
             return out
 
         # 3) SUUMO住所 が既に枝番入りの完全住所 → Places を呼ばず即採用
@@ -291,6 +292,7 @@ class AddressPredictor:
             )
             out.predicted_address = "検索結果 なし"
             out.needs_manual_check = True
+            out.note = "住所予測不可"
             self.failure_count += 1
             return out
 
@@ -314,6 +316,7 @@ class AddressPredictor:
             self.failure_count += 1
             out.predicted_address = "検索結果 なし"
             out.needs_manual_check = True
+            out.note = "住所予測不可"
             return out
 
         # 5) Places 結果の判定
@@ -338,6 +341,7 @@ class AddressPredictor:
             # 丁目止まり / 該当なし → 「検索結果 なし」
             out.predicted_address = "検索結果 なし"
             out.needs_manual_check = True
+            out.note = "住所予測不可"
             self.failure_count += 1
 
         return out
