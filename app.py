@@ -146,23 +146,38 @@ def _setup_logger(log_buffer: deque) -> logging.Logger:
 
 
 # ====================================================================
-# Session state 初期化
+# 全セッション共有の実行状態 (タブを閉じても残る / 再オープン時も見える)
+# Streamlit Cloud の同一プロセス内で生きている限り共有される
+# ====================================================================
+@st.cache_resource(show_spinner=False)
+def get_run_state() -> dict:
+    """ブラウザタブを跨いで共有される実行状態。
+
+    @st.cache_resource で 1プロセス1インスタンスに固定される。
+    タブを閉じても (= Streamlit セッションが終わっても) この dict は生存し、
+    新しいタブで開いた時にここから現在の進捗を読める。
+    """
+    return {
+        "pipeline": None,           # Pipeline インスタンス (実行中・完了問わず)
+        "worker_thread": None,      # バックグラウンドスレッド
+        "log_buffer": deque(maxlen=500),  # ログ (スレッド書込・全UI参照)
+        "started_at": None,         # 実行開始時刻 (time.time)
+        "completed": False,         # 一度完了したか
+        "last_error": "",
+        "rc_filter_used": True,
+        "predict_used": True,
+    }
+
+
+RUN_STATE: dict = get_run_state()
+
+
+# ====================================================================
+# Session state 初期化 (セッション固有の UI 状態のみ。Pipeline 等は RUN_STATE)
 # ====================================================================
 def _init_session_state() -> None:
-    defaults = {
-        "running": False,
-        "pipeline": None,
-        "worker_thread": None,
-        "log_buffer": deque(maxlen=500),  # スレッド共有, 最大500行保持
-        "started_at": None,
-        "completed": False,  # 一度実行が終わったか
-        "last_error": "",
-        "rc_filter_used": True,  # 直近実行時の RC フィルタ設定
-        "predict_used": True,    # 直近実行時の予測 ON/OFF 設定
-    }
-    for k, v in defaults.items():
-        if k not in st.session_state:
-            st.session_state[k] = v
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
 
 
 _init_session_state()
@@ -170,18 +185,22 @@ _init_session_state()
 
 # ====================================================================
 # 実行中状態の判定 (スレッドの生死から)
+# 共有状態 (RUN_STATE) を参照するので、別タブから開いてもちゃんと反映される
 # ====================================================================
-# スレッドからの session_state 更新は信頼性が低いため、
-# 各リランで worker_thread.is_alive() を見て running を更新する
-_thread = st.session_state.worker_thread
+_thread = RUN_STATE.get("worker_thread")
 if _thread is not None:
     if _thread.is_alive():
-        st.session_state.running = True
+        # まだ動いてる
+        pass
     else:
-        # スレッド終了 → 一度だけ完了状態に遷移
-        if st.session_state.running:
-            st.session_state.completed = True
-        st.session_state.running = False
+        # スレッド終了 → 完了フラグを立てる
+        if not RUN_STATE.get("completed"):
+            RUN_STATE["completed"] = True
+
+
+def _is_running() -> bool:
+    t = RUN_STATE.get("worker_thread")
+    return t is not None and t.is_alive()
 
 
 # ====================================================================
@@ -215,7 +234,7 @@ st.caption("一覧 URL からスプレッドシートに物件情報を書き出
 # ====================================================================
 st.subheader("入力")
 
-is_running = st.session_state.running
+is_running = _is_running()
 
 url = st.text_input(
     "一覧 URL", value=saved_url, disabled=is_running, key="input_url",
@@ -270,12 +289,11 @@ def _start_pipeline(
 ) -> None:
     """Pipeline をメインスレッドで生成し、スレッドは run() だけ呼ぶ。
 
-    Streamlit の session_state はスレッド跨ぎで安定しないため、
-    pipeline インスタンス自体はメインスレッドで作って session_state に格納する。
-    バックグラウンドスレッドでは pipeline.run() を呼ぶだけ。
+    Pipeline インスタンス・スレッド・ログバッファは RUN_STATE (@st.cache_resource) に
+    格納するので、ブラウザタブを閉じて再オープンしても同じ状態が見える。
     """
 
-    log_buffer: deque = st.session_state.log_buffer
+    log_buffer: deque = RUN_STATE["log_buffer"]
     log_buffer.clear()
     logger = _setup_logger(log_buffer)
 
@@ -315,7 +333,7 @@ def _start_pipeline(
                 )
         except SheetsError as exc:
             logger.error("スプレッドシート初期化失敗: %s", exc)
-            st.session_state.last_error = f"スプレッドシート初期化失敗: {exc}"
+            RUN_STATE["last_error"] = f"スプレッドシート初期化失敗: {exc}"
             return
 
         pipeline = Pipeline(
@@ -329,17 +347,16 @@ def _start_pipeline(
 
     except Exception as exc:
         logger.exception("Pipeline 初期化失敗: %s", exc)
-        st.session_state.last_error = f"初期化失敗: {exc}"
+        RUN_STATE["last_error"] = f"初期化失敗: {exc}"
         return
 
-    # === メインスレッドで session_state に確実に格納 ===
-    st.session_state.pipeline = pipeline
-    st.session_state.running = True
-    st.session_state.completed = False
-    st.session_state.last_error = ""
-    st.session_state.started_at = time.time()
-    st.session_state.rc_filter_used = rc_filter_enabled
-    st.session_state.predict_used = predict_enabled
+    # === 共有 RUN_STATE に格納 (タブ閉じても残る) ===
+    RUN_STATE["pipeline"] = pipeline
+    RUN_STATE["completed"] = False
+    RUN_STATE["last_error"] = ""
+    RUN_STATE["started_at"] = time.time()
+    RUN_STATE["rc_filter_used"] = rc_filter_enabled
+    RUN_STATE["predict_used"] = predict_enabled
 
     # === バックグラウンドスレッドは pipeline.run() だけ呼ぶ ===
     def _worker():
@@ -350,7 +367,7 @@ def _start_pipeline(
 
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
-    st.session_state.worker_thread = t
+    RUN_STATE["worker_thread"] = t
 
 
 # ====================================================================
@@ -393,8 +410,8 @@ if run_clicked:
         st.rerun()
 
 if stop_clicked:
-    if st.session_state.pipeline:
-        st.session_state.pipeline.request_stop()
+    if RUN_STATE.get("pipeline"):
+        RUN_STATE["pipeline"].request_stop()
         st.toast("停止要求を送信しました…")
 
 
@@ -404,15 +421,15 @@ if stop_clicked:
 st.divider()
 st.subheader("処理状況")
 
-pipeline: Optional[Pipeline] = st.session_state.pipeline
+pipeline: Optional[Pipeline] = RUN_STATE.get("pipeline")
 stats: Optional[RunStats] = pipeline.stats if pipeline else None
 
 if stats is None:
     st.info("「実行」ボタンを押すと処理を開始します")
 
 else:
-    rc_filter_used = st.session_state.rc_filter_used
-    predict_used = st.session_state.predict_used
+    rc_filter_used = RUN_STATE.get("rc_filter_used", True)
+    predict_used = RUN_STATE.get("predict_used", True)
 
     # 処理済み件数 (success + duplicate + skip + rc_filtered + errors)
     processed = (
@@ -430,10 +447,10 @@ else:
     else:
         st.info("全体件数は取得できませんでした (進捗% は表示されません)")
 
-    # ステータス行
-    if st.session_state.running:
+    # ステータス行 (実行中か完了かはスレッドの生死で判定)
+    if is_running:
         status_label = f"ページ {max(stats.pages_visited, 1)} 処理中…"
-    elif st.session_state.completed:
+    elif RUN_STATE.get("completed"):
         status_label = f"✅ 完了 (全 {stats.pages_visited} ページ)"
     else:
         status_label = "待機中"
@@ -450,12 +467,12 @@ else:
 
     # ETA
     if (
-        st.session_state.started_at
+        RUN_STATE.get("started_at")
         and processed > 0
         and total > 0
-        and st.session_state.running
+        and is_running
     ):
-        elapsed = time.time() - st.session_state.started_at
+        elapsed = time.time() - RUN_STATE["started_at"]
         remaining_sec = elapsed * (total - processed) / processed
         eta_dt = datetime.now() + timedelta(seconds=remaining_sec)
         h = int(remaining_sec // 3600)
@@ -526,7 +543,7 @@ else:
         )
 
     # 完了時のサマリ
-    if st.session_state.completed and not st.session_state.running:
+    if RUN_STATE.get("completed") and not is_running:
         st.success(
             f"処理完了。シート「{stats.sheet_name}」に {stats.success:,} 件を書き出しました。"
         )
@@ -534,8 +551,8 @@ else:
             sheet_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}"
             st.markdown(f"[📊 スプレッドシートを開く]({sheet_url})")
 
-    if st.session_state.last_error:
-        st.error(f"エラー: {st.session_state.last_error}")
+    if RUN_STATE.get("last_error"):
+        st.error(f"エラー: {RUN_STATE['last_error']}")
 
 
 # ====================================================================
@@ -543,7 +560,7 @@ else:
 # ====================================================================
 st.divider()
 st.subheader("ログ")
-log_lines = list(st.session_state.log_buffer)
+log_lines = list(RUN_STATE.get("log_buffer", []))
 if log_lines:
     log_text = "\n".join(log_lines[-200:])  # 直近200行
     st.code(log_text, language="text")
@@ -553,7 +570,9 @@ else:
 
 # ====================================================================
 # 自動リフレッシュ (実行中のみ)
+# 別タブから開いた直後でも、共有 RUN_STATE 経由でスレッドの生死を見て
+# 動いていればここで毎秒リランしてライブ更新が再開する
 # ====================================================================
-if st.session_state.running:
+if is_running:
     time.sleep(1.5)
     st.rerun()
