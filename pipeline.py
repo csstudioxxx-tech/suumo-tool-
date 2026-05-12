@@ -416,9 +416,18 @@ class Pipeline:
         manual_mark = "TRUE" if pred.needs_manual_check else "FALSE"
         note = pred.note or ""
 
+        # 物件管理コード: 上から書き込んだ順に 1, 2, 3, ... の連番
+        # success が +1 される前にこの行の番号を計算 (= 次に書く行 = success+1)
+        mgmt_code = str(self.stats.success + 1)
+
         # 列名 → 値 の辞書 (config.py 側の SHEET_COLUMNS の順序がどうなっていてもOK)
         # 同義ラベルもすべて拾えるよう alias 含めて定義
         column_values: dict[str, str] = {
+            # 物件管理コード (1から連番)
+            "物件管理コード": mgmt_code,
+            "管理コード": mgmt_code,                    # alias
+            "No": mgmt_code,                            # alias
+            "ID": mgmt_code,                            # alias
             # 物件基本情報
             "物件名": detail.name,
             "物件名称": detail.name,                    # alias

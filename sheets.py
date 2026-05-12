@@ -43,6 +43,8 @@ BORDER_COLOR = {"red": 0.886, "green": 0.910, "blue": 0.941}
 # 列ごとの推奨幅 (px)。SHEET_COLUMNS のラベル名でルックアップ。
 # config.py 側で別ラベルでも fallback で動くよう、エイリアスも持つ。
 _COLUMN_WIDTHS_BY_NAME: dict[str, int] = {
+    # 管理番号
+    "物件管理コード": 110, "管理コード": 110, "No": 60, "ID": 70,
     # 標準ラベル
     "物件名": 240, "物件名称": 240,
     "SUUMO住所": 250, "住所": 250,
@@ -120,6 +122,10 @@ class SheetsClient:
     def list_worksheet_titles(self) -> list[str]:
         return [ws.title for ws in self._spreadsheet.worksheets()]
 
+    # 件数不明時のフォールバック初期行数 と 拡張ステップ
+    FALLBACK_INITIAL_ROWS = 100   # SUUMO 件数が取れなかった時の初期行数
+    EXPAND_STEP_ROWS = 100         # 足りなくなった時に追加する行数 (安全網)
+
     def create_sheet_for_region(
         self,
         pref: str,
@@ -130,10 +136,12 @@ class SheetsClient:
         """都道府県/市区町村 からシート名を生成して新規シートを作る。
         生成後、固有スタイル (ヘッダー強調・列幅・チェックボックス) も適用する。
 
-        expected_data_rows: 予想書込件数 (例: SUUMO一覧の全体件数)。
-            指定があれば +200 のバッファで初期行数を決定。
-            指定なしは 5000 行 (普段はこれで十分)。
-            3万件など大きいジョブも 30,200 行で確保できる。
+        行数決定ロジック:
+        - expected_data_rows (= SUUMO 全体件数) があれば、その+ヘッダー1+少バッファ で確保。
+          → スタイル (縞模様/チェックボックス) も最初から全行に効く
+          → 拡張処理が基本走らないので API 呼び出しも減る
+        - 件数不明時は FALLBACK_INITIAL_ROWS (100行) で開始し、
+          必要に応じて append_rows 内で EXPAND_STEP_ROWS ずつ自動拡張。
         """
         existing = self.list_worksheet_titles()
         sheet_name = build_sheet_name(
@@ -142,15 +150,15 @@ class SheetsClient:
             fallback_id=fallback_id,
             existing_names=existing,
         )
-        # 行数決定: 想定件数があれば +200 バッファ、なければ 5000 行
+        # 初期行数: 想定件数 + ヘッダー1行 + 安全バッファ20行
         if expected_data_rows and expected_data_rows > 0:
-            rows_count = max(1000, expected_data_rows + 200)
+            initial_rows = expected_data_rows + 21
         else:
-            rows_count = 5000
+            initial_rows = self.FALLBACK_INITIAL_ROWS
         # 列数は SHEET_COLUMNS に合わせる(余裕を持って +2)
         ws = self._spreadsheet.add_worksheet(
             title=sheet_name,
-            rows=rows_count,
+            rows=initial_rows,
             cols=max(10, len(SHEET_COLUMNS) + 2),
         )
         ws.append_row(SHEET_COLUMNS, value_input_option="USER_ENTERED")
@@ -386,15 +394,20 @@ class SheetsClient:
         start_row = self._next_row
         end_row = start_row + len(rows) - 1
 
-        # 行数が足りなければシートを動的に拡張 (3万件など大規模ジョブ対応)
-        current_max = self._worksheet.row_count or 1000
+        # 行数が足りなければシートを動的に拡張
+        # 初期 10 行 → 必要に応じて 100 行ずつ追加
+        # 一気に大量に書き込む場合でも必要分だけ追加する (100行単位の倍数)
+        current_max = self._worksheet.row_count or self.INITIAL_ROWS
         if end_row > current_max:
-            rows_to_add = max(5000, end_row - current_max + 1000)
+            shortage = end_row - current_max
+            # 不足分を EXPAND_STEP_ROWS の倍数に丸めて追加
+            step = self.EXPAND_STEP_ROWS
+            rows_to_add = ((shortage + step - 1) // step) * step
             try:
                 self._worksheet.add_rows(rows_to_add)
                 self._logger.info(
-                    "シート行数を %d → %d 行に拡張",
-                    current_max, current_max + rows_to_add,
+                    "シート行数を %d → %d 行に拡張 (+%d)",
+                    current_max, current_max + rows_to_add, rows_to_add,
                 )
             except Exception as exc:
                 self._logger.warning("行数拡張失敗: %s", exc)
