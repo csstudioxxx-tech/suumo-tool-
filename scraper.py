@@ -35,8 +35,10 @@ class Scraper:
     """同期 HTTP クライアントをラップしたクラス。"""
 
     # デフォルトのアクセス間隔範囲 (ランダム化)
-    DEFAULT_INTERVAL_MIN_SEC = 6.0
-    DEFAULT_INTERVAL_MAX_SEC = 11.0
+    # 高速化のため 4〜7秒 (旧: 6〜11秒) に短縮。
+    # バンリスクは 10秒間隔より上がるが、業界標準範囲内 (3-5秒間隔は普通)。
+    DEFAULT_INTERVAL_MIN_SEC = 4.0
+    DEFAULT_INTERVAL_MAX_SEC = 7.0
     # デフォルトの長休憩設定: 300リクエストごとに 43秒
     DEFAULT_LONG_BREAK_EVERY = 300
     DEFAULT_LONG_BREAK_SEC = 43.0

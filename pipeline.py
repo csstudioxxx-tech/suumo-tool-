@@ -110,7 +110,12 @@ def extract_total_count(html: str) -> int:
         return max(candidates)
 
     return 0
-from config import MAX_PAGE_HARD_LIMIT, SHEET_COLUMNS
+from config import MAX_PAGE_HARD_LIMIT as _CONFIG_MAX_PAGE_LIMIT, SHEET_COLUMNS
+
+# config.py の MAX_PAGE_HARD_LIMIT を pipeline 側で上書き。
+# SUUMO の 1000ページ超物件にも対応するため、上限を 10000 まで引き上げ。
+# (config.py が 200 とかでも、pipeline 側で 10000 として動く)
+MAX_PAGE_HARD_LIMIT = max(_CONFIG_MAX_PAGE_LIMIT, 10000)
 from parser import (
     PropertyDetail,
     extract_detail_urls,
