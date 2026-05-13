@@ -276,6 +276,17 @@ with col_opt2:
         value=saved_predict, disabled=is_running, key="input_predict",
     )
 
+# 途中から再開オプション (デフォルト OFF)
+resume_from_existing = st.checkbox(
+    "途中から再開 (既存シートに追記)",
+    value=False, disabled=is_running, key="input_resume",
+    help=(
+        "同じ地域のシートが既にあれば、そこに追記する形で続行します。"
+        "既存シートに「物件URL」列があれば、詳細fetch前にスキップできるため高速。"
+        "なければ name+address マッチで判定 (やや遅い)。"
+    ),
+)
+
 
 # ====================================================================
 # バックグラウンド実行
@@ -286,6 +297,7 @@ def _start_pipeline(
     predict_enabled: bool,
     rc_filter_enabled: bool,
     gmap_key: str,
+    resume_from_existing: bool = False,
 ) -> None:
     """Pipeline をメインスレッドで生成し、スレッドは run() だけ呼ぶ。
 
@@ -343,6 +355,7 @@ def _start_pipeline(
             logger=logger,
             log_cb=lambda msg: None,  # logger 経由でログは取れる
             rc_filter_enabled=rc_filter_enabled,
+            resume_from_existing_sheet=resume_from_existing,
         )
 
     except Exception as exc:
@@ -406,7 +419,10 @@ if run_clicked:
                 )
             except Exception:
                 pass  # 設定保存失敗は無視 (実行は続ける)
-        _start_pipeline(url, sheet_id, predict, rc_filter, gmap_key)
+        _start_pipeline(
+            url, sheet_id, predict, rc_filter, gmap_key,
+            resume_from_existing=resume_from_existing,
+        )
         st.rerun()
 
 if stop_clicked:

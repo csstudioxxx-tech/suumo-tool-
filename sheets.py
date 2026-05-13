@@ -56,6 +56,8 @@ _COLUMN_WIDTHS_BY_NAME: dict[str, int] = {
     "GMap URL": 220, "予測住所のGoogle Map URL": 220,
     "要手動確認": 110,
     "備考": 320,
+    # 再開機能用
+    "物件URL": 280, "SUUMO URL": 280,
 }
 _DEFAULT_COL_WIDTH = 160
 
@@ -374,6 +376,105 @@ class SheetsClient:
 
         if requests:
             self._spreadsheet.batch_update({"requests": requests})
+
+    # ------------------------------------------------------------------
+    # 再開モード: 既存シートを再利用する
+    # ------------------------------------------------------------------
+    def find_latest_sheet_for_region(
+        self, pref: str, city: str, fallback_id: str = ""
+    ) -> Optional[str]:
+        """指定地域のシートを探して最新を返す。
+        日付プレフィックスは無視して、地域名がマッチする全シートから最新を選ぶ。
+        例: 26_05/07_神奈川県横浜市 と 26_05/13_神奈川県横浜市 が両方あれば 13 の方を返す。
+        """
+        base = build_sheet_name(
+            pref=pref, city=city, fallback_id=fallback_id,
+            existing_names=[],
+        )
+        # base から地域部分を抽出 ("26_05/12_神奈川県横浜市" → "神奈川県横浜市")
+        import re as _re
+        m = _re.match(r"^\d{2}_\d{2}/\d{2}_(.+?)(_\d+)?$", base)
+        region_part = m.group(1) if m else f"{pref}{city}"
+
+        titles = self.list_worksheet_titles()
+        candidates = [t for t in titles if region_part in t]
+        if not candidates:
+            return None
+
+        # 名前降順で最新を選ぶ (日付プレフィックスが大きい = 新しい)
+        candidates.sort(reverse=True)
+        return candidates[0]
+
+    def use_existing_sheet(self, sheet_name: str) -> int:
+        """既存シートを worksheet として選択して、次の書込行を計算する。
+        Returns: 既存データ行数 (ヘッダー除く)
+        """
+        try:
+            ws = self._spreadsheet.worksheet(sheet_name)
+        except gspread.exceptions.WorksheetNotFound:
+            raise SheetsError(f"シート '{sheet_name}' が見つかりません")
+
+        self._worksheet = ws
+        all_values = ws.get_all_values()
+        # 既存データの直下に書くため _next_row = 全行数 + 1
+        self._next_row = len(all_values) + 1
+        data_rows = max(0, len(all_values) - 1)
+        self._logger.info(
+            "既存シート '%s' を再利用 (データ %d 行)。次の書込行: %d",
+            sheet_name, data_rows, self._next_row,
+        )
+        return data_rows
+
+    def read_existing_property_keys(self) -> tuple:
+        """選択中シートから (物件名|住所 集合, 物件URL集合) を返す。
+        URL があれば詳細ページfetch前に高速スキップ可能。
+        URL列が無い古いシートでも、name+address 集合は返す (遅いが動作する)。
+
+        Returns: (dedup_keys: set[str], visited_urls: set[str])
+        """
+        if self._worksheet is None:
+            return set(), set()
+
+        try:
+            all_values = self._worksheet.get_all_values()
+        except Exception as exc:
+            self._logger.warning("既存シート読み込み失敗: %s", exc)
+            return set(), set()
+
+        if len(all_values) < 2:
+            return set(), set()
+
+        header = all_values[0]
+
+        def _find_col(*labels: str) -> Optional[int]:
+            for label in labels:
+                if label in header:
+                    return header.index(label)
+            return None
+
+        name_idx = _find_col("物件名", "物件名称")
+        addr_idx = _find_col("SUUMO住所", "住所")
+        url_idx = _find_col("物件URL", "SUUMO URL")
+
+        if name_idx is None or addr_idx is None:
+            self._logger.warning(
+                "既存シートのヘッダーに 物件名/住所 列が見つかりません"
+            )
+            return set(), set()
+
+        dedup_keys: set[str] = set()
+        visited_urls: set[str] = set()
+        for row in all_values[1:]:
+            if name_idx < len(row) and addr_idx < len(row):
+                name = (row[name_idx] or "").strip()
+                addr = (row[addr_idx] or "").strip()
+                if name or addr:
+                    dedup_keys.add(f"{name}|{addr}")
+            if url_idx is not None and url_idx < len(row):
+                u = (row[url_idx] or "").strip()
+                if u:
+                    visited_urls.add(u)
+        return dedup_keys, visited_urls
 
     # ------------------------------------------------------------------
     # 行追加 (行位置を明示して書く)

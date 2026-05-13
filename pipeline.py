@@ -168,6 +168,7 @@ class Pipeline:
         status_cb: Optional[StatusCallback] = None,
         log_cb: Optional[LogCallback] = None,
         rc_filter_enabled: bool = True,
+        resume_from_existing_sheet: bool = False,
     ) -> None:
         self._scraper = scraper
         self._predictor = predictor
@@ -177,6 +178,10 @@ class Pipeline:
         self._log_cb = log_cb or (lambda _: None)
         # True なら RC系構造の物件のみシートに書き出す (非対象は予測も書込もしない)
         self._rc_filter_enabled = rc_filter_enabled
+        # True なら既存シートを探して再利用 (途中から再開)
+        self._resume_from_existing = resume_from_existing_sheet
+        # 再開時の name+address スキップ集合 (URL列がない古いシート用フォールバック)
+        self._resume_skip_keys: set[str] = set()
 
         self._stop_event = threading.Event()
         self._visited_list_urls: set[str] = set()
@@ -235,21 +240,58 @@ class Pipeline:
         except Exception as exc:
             self._logger.warning("総件数抽出失敗: %s", exc)
 
-        # シート生成(最初のページから地域取得)
-        # 想定件数 (total_count) があれば、その +200 行で初期サイズを確保
+        # シート生成 or 既存シート再利用
         try:
             pref, city, fallback_id = extract_region(first_html, start_url)
             expected_rows = self.stats.total_count if self.stats.total_count > 0 else None
-            sheet_name = self._sheets.create_sheet_for_region(
-                pref, city, fallback_id,
-                expected_data_rows=expected_rows,
-            )
+
+            sheet_name = None
+            if self._resume_from_existing:
+                # 既存シートを検索
+                existing = self._sheets.find_latest_sheet_for_region(
+                    pref, city, fallback_id,
+                )
+                if existing:
+                    data_rows = self._sheets.use_existing_sheet(existing)
+                    dedup_keys, visited_urls = (
+                        self._sheets.read_existing_property_keys()
+                    )
+
+                    # URL があれば _visited_detail_urls に流し込み (高速スキップ)
+                    if visited_urls:
+                        self._visited_detail_urls = visited_urls
+                        self._log(
+                            f"再開: 既存シート '{existing}' から URL {len(visited_urls)} 件 "
+                            f"を読込 → 詳細fetch前に高速スキップ"
+                        )
+                    else:
+                        self._log(
+                            f"再開: 既存シート '{existing}' に URL列なし → "
+                            f"name+addressマッチで {len(dedup_keys)} 件をスキップ (低速)"
+                        )
+
+                    # name+address スキップ集合 (URL列がない時のフォールバック)
+                    self._resume_skip_keys = dedup_keys
+                    sheet_name = existing
+                    # 既存件数を success カウンタに反映 (物件管理コードが続きから振られるよう)
+                    self.stats.success = data_rows
+                else:
+                    self._log(
+                        "再開対象の既存シートが見つかりません。新規作成します。"
+                    )
+
+            if sheet_name is None:
+                sheet_name = self._sheets.create_sheet_for_region(
+                    pref, city, fallback_id,
+                    expected_data_rows=expected_rows,
+                )
+                self._log(f"シート生成: {sheet_name}")
+
             self.stats.sheet_name = sheet_name
-            self._log(f"シート生成: {sheet_name}")
         except Exception as exc:
-            self._logger.exception("シート生成失敗: %s", exc)
+            self._logger.exception("シート初期化失敗: %s", exc)
             self.stats.errors += 1
-            self.stats.error_messages.append(f"シート生成失敗: {exc}")
+            self.stats.error_messages.append(f"シート初期化失敗: {exc}")
             self.stats.finished_at = time.time()
             return self.stats
 
@@ -377,6 +419,15 @@ class Pipeline:
         # ライブUI 用: 直近処理中の物件名
         self.stats.current_property_name = detail.name or "(名称不明)"
 
+        # 再開モードのフォールバック: name+address マッチで既存物件をスキップ
+        # (URL列が無い古いシートから再開した場合のみ動作 - 通常は _visited_detail_urls
+        #  で詳細fetch前にスキップされる)
+        if self._resume_skip_keys:
+            resume_key = f"{detail.name}|{detail.address}"
+            if resume_key in self._resume_skip_keys:
+                self.stats.duplicated += 1
+                return
+
         # 重複排除(物件名 + 住所 + URL)
         dedup_key = f"{detail.name}|{detail.address}|{detail_url}"
         if dedup_key in self._dedup_keys:
@@ -451,6 +502,9 @@ class Pipeline:
             # フラグ・備考
             "要手動確認": manual_mark,
             "備考": note,
+            # SUUMO 物件URL (再開時に高速スキップ判定に使う)
+            "物件URL": detail.detail_url,
+            "SUUMO URL": detail.detail_url,
         }
 
         # SHEET_COLUMNS の順序に合わせて行を組み立てる (未定義ラベルは空文字)
