@@ -153,6 +153,9 @@ class RunStats:
     total_count: int = 0
     # 直近処理中の物件名 (live UI 用)
     current_property_name: str = ""
+    # 再開モード時: セッション開始時に既存シートにあったデータ行数
+    # 物件管理コードを continuing 番号にするため & UI 表示用
+    resumed_from_row: int = 0
     error_messages: list[str] = field(default_factory=list)
 
 
@@ -273,8 +276,9 @@ class Pipeline:
                     # name+address スキップ集合 (URL列がない時のフォールバック)
                     self._resume_skip_keys = dedup_keys
                     sheet_name = existing
-                    # 既存件数を success カウンタに反映 (物件管理コードが続きから振られるよう)
-                    self.stats.success = data_rows
+                    # 再開時の既存行数を別フィールドに保存
+                    # (success に直接入れると重複カウントが二重になるため)
+                    self.stats.resumed_from_row = data_rows
                 else:
                     self._log(
                         "再開対象の既存シートが見つかりません。新規作成します。"
@@ -473,8 +477,11 @@ class Pipeline:
         note = pred.note or ""
 
         # 物件管理コード: 上から書き込んだ順に 1, 2, 3, ... の連番
-        # success が +1 される前にこの行の番号を計算 (= 次に書く行 = success+1)
-        mgmt_code = str(self.stats.success + 1)
+        # 再開時は既存行数 (resumed_from_row) を加えて続き番号にする。
+        # 通常実行時は resumed_from_row=0 なので影響なし。
+        mgmt_code = str(
+            self.stats.success + self.stats.resumed_from_row + 1
+        )
 
         # 列名 → 値 の辞書 (config.py 側の SHEET_COLUMNS の順序がどうなっていてもOK)
         # 同義ラベルもすべて拾えるよう alias 含めて定義

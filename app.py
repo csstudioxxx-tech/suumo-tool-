@@ -463,6 +463,13 @@ else:
     else:
         st.info("全体件数は取得できませんでした (進捗% は表示されません)")
 
+    # 再開モード時: 既存処理済み件数を明示
+    if stats.resumed_from_row > 0:
+        st.info(
+            f"♻️ 再開モード: 既存シートから {stats.resumed_from_row:,} 件読込済み。"
+            f"今回のセッションでは新規追加分のみカウント。"
+        )
+
     # ステータス行 (実行中か完了かはスレッドの生死で判定)
     if is_running:
         status_label = f"ページ {max(stats.pages_visited, 1)} 処理中…"
