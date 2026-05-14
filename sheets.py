@@ -408,10 +408,13 @@ class SheetsClient:
     def use_existing_sheet(self, sheet_name: str) -> int:
         """既存シートを worksheet として選択して、次の書込行を計算する。
 
-        get_all_values() はシートの空行も含めて返すため (特に初期サイズで
-        大量に行を確保した場合)、末尾から非空行を探して **実データの直下** に
-        書き込みポインタをセットする。
-        Returns: 既存データ行数 (ヘッダー除く)
+        ロジック:
+        - 物件名 (or 物件名称) 列を基準にして、ヘッダーの次から「連続データブロック」を探す
+        - 最初に物件名が空の行を見つけたら、そこで終了 (それ以降は無視)
+        - これにより、過去バグで深部に残ったゴミ行を無視できる
+        - 物件管理コードがあれば最大値を返す (続き番号用)
+
+        Returns: resumed_from_row (= 最大物件管理コード または データ行数)
         """
         try:
             ws = self._spreadsheet.worksheet(sheet_name)
@@ -421,29 +424,72 @@ class SheetsClient:
         self._worksheet = ws
         all_values = ws.get_all_values()
 
-        # 末尾から走査して、何かしらの値が入ってる最後の行を見つける
-        last_data_idx = -1  # 0-indexed; -1 なら完全に空
-        for i in range(len(all_values) - 1, -1, -1):
-            if any((cell or "").strip() for cell in all_values[i]):
-                last_data_idx = i
-                break
-
-        if last_data_idx < 0:
-            # シートが完全に空 (ヘッダーすら無い)
+        if len(all_values) < 2:
+            # ヘッダーすら無い、またはヘッダーのみ
             self._next_row = 2
-            data_rows = 0
+            self._logger.info(
+                "既存シート '%s' を再利用 (データ 0 行、空状態から開始)",
+                sheet_name,
+            )
+            return 0
+
+        header = all_values[0]
+
+        def _find_col(*labels: str) -> Optional[int]:
+            for label in labels:
+                if label in header:
+                    return header.index(label)
+            return None
+
+        name_idx = _find_col("物件名", "物件名称")
+        code_idx = _find_col("物件管理コード", "管理コード", "No", "ID")
+
+        # 連続データブロックの最終行を探す (物件名で判定)
+        # 物件名列が無い古いシートは any-cell フォールバック
+        last_data_idx = 0  # 0-indexed (= ヘッダー = row 1)
+        max_code = 0
+
+        if name_idx is not None:
+            # 物件名列ありの場合: 物件名が空白の行で打ち切り
+            for i in range(1, len(all_values)):
+                row = all_values[i]
+                has_name = (
+                    name_idx < len(row)
+                    and bool((row[name_idx] or "").strip())
+                )
+                if not has_name:
+                    break
+                last_data_idx = i
+                # 管理コードを記録
+                if code_idx is not None and code_idx < len(row):
+                    try:
+                        code = int((row[code_idx] or "").strip())
+                        if code > max_code:
+                            max_code = code
+                    except (ValueError, TypeError):
+                        pass
         else:
-            # last_data_idx は 0-indexed (= row 1 が idx 0)
-            # 次の書込行は last_data_idx + 2 (1-indexed)
-            self._next_row = last_data_idx + 2
-            data_rows = last_data_idx  # ヘッダー除いたデータ行数
+            # フォールバック: 物件名列が無い時は any-cell の連続性
+            for i in range(1, len(all_values)):
+                row = all_values[i]
+                if any((cell or "").strip() for cell in row):
+                    last_data_idx = i
+                else:
+                    break
+
+        # 書込位置 = 連続データブロックの最終行 +1
+        self._next_row = last_data_idx + 2 if last_data_idx > 0 else 2
+        data_rows = last_data_idx  # 0 ならヘッダーのみ
+
+        # resumed_from_row: 管理コードがあればその最大値、なければ単純な行数
+        resumed_value = max_code if max_code > 0 else data_rows
 
         self._logger.info(
-            "既存シート '%s' を再利用 (データ %d 行、シート総行数 %d)。"
-            "次の書込行: %d",
-            sheet_name, data_rows, len(all_values), self._next_row,
+            "既存シート '%s' を再利用 (連続データ %d 行、最大管理コード %d、"
+            "シート総行数 %d)。次の書込行: %d",
+            sheet_name, data_rows, max_code, len(all_values), self._next_row,
         )
-        return data_rows
+        return resumed_value
 
     def read_existing_property_keys(self) -> tuple:
         """選択中シートから (物件名|住所 集合, 物件URL集合) を返す。
