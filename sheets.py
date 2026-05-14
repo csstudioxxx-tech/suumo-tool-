@@ -407,6 +407,10 @@ class SheetsClient:
 
     def use_existing_sheet(self, sheet_name: str) -> int:
         """既存シートを worksheet として選択して、次の書込行を計算する。
+
+        get_all_values() はシートの空行も含めて返すため (特に初期サイズで
+        大量に行を確保した場合)、末尾から非空行を探して **実データの直下** に
+        書き込みポインタをセットする。
         Returns: 既存データ行数 (ヘッダー除く)
         """
         try:
@@ -416,12 +420,28 @@ class SheetsClient:
 
         self._worksheet = ws
         all_values = ws.get_all_values()
-        # 既存データの直下に書くため _next_row = 全行数 + 1
-        self._next_row = len(all_values) + 1
-        data_rows = max(0, len(all_values) - 1)
+
+        # 末尾から走査して、何かしらの値が入ってる最後の行を見つける
+        last_data_idx = -1  # 0-indexed; -1 なら完全に空
+        for i in range(len(all_values) - 1, -1, -1):
+            if any((cell or "").strip() for cell in all_values[i]):
+                last_data_idx = i
+                break
+
+        if last_data_idx < 0:
+            # シートが完全に空 (ヘッダーすら無い)
+            self._next_row = 2
+            data_rows = 0
+        else:
+            # last_data_idx は 0-indexed (= row 1 が idx 0)
+            # 次の書込行は last_data_idx + 2 (1-indexed)
+            self._next_row = last_data_idx + 2
+            data_rows = last_data_idx  # ヘッダー除いたデータ行数
+
         self._logger.info(
-            "既存シート '%s' を再利用 (データ %d 行)。次の書込行: %d",
-            sheet_name, data_rows, self._next_row,
+            "既存シート '%s' を再利用 (データ %d 行、シート総行数 %d)。"
+            "次の書込行: %d",
+            sheet_name, data_rows, len(all_values), self._next_row,
         )
         return data_rows
 
